@@ -1,0 +1,66 @@
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: frontend
+  namespace: default
+spec:
+  owner:
+    projectName: gcp-microservice-demo
+
+  componentType: deployment/web-application
+  autoDeploy: true
+
+  parameters:
+    replicas: 1
+    port: 8080
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "128Mi"
+      limits:
+        cpu: "200m"
+        memory: "256Mi"
+
+---
+
+apiVersion: openchoreo.dev/v1alpha1
+kind: Workload
+metadata:
+  name: frontend
+  namespace: default
+spec:
+  owner:
+    componentName: frontend
+    projectName: gcp-microservice-demo
+  containers:
+    main:
+      image: us-central1-docker.pkg.dev/google-samples/microservices-demo/frontend:v0.10.3
+      env:
+        - key: DISABLE_PROFILER
+          value: "1"
+        - key: PORT
+          value: "8080"
+        - key: SHOPPING_ASSISTANT_SERVICE_ADDR
+          value: "-" # We don't deploy this service. See https://github.com/GoogleCloudPlatform/microservices-demo/blob/main/helm-chart/values.yaml#L218
+        - key: CYMBAL_BRANDING
+          value: "false"
+        - key: FRONTEND_MESSAGE
+          value: "Welcome to the Microservices Demo!"
+        - key: ENABLE_ASSISTANT
+          value: "false"
+        - key: AD_SERVICE_ADDR
+          value: "ad:80"
+        - key: CART_SERVICE_ADDR
+          value: "cart:80"
+        - key: CHECKOUT_SERVICE_ADDR
+          value: "checkout:80"
+        - key: CURRENCY_SERVICE_ADDR
+          value: "currency:80"
+        - key: PAYMENT_SERVICE_ADDR
+          value: "payment:80"
+        - key: RECOMMENDATION_SERVICE_ADDR
+          value: "recommendation:80"
+        - key: SHIPPING_SERVICE_ADDR
+          value: "shipping:80"
+        - key: PRODUCT_CATALOG_SERVICE_ADDR
+          value: "productcatalog:80"

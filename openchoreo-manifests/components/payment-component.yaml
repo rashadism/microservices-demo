@@ -1,0 +1,42 @@
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: payment
+  namespace: default
+spec:
+  owner:
+    projectName: gcp-microservice-demo
+
+  componentType: deployment/service
+  autoDeploy: true
+
+  parameters:
+    replicas: 1
+    port: 50051
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "128Mi"
+      limits:
+        cpu: "200m"
+        memory: "256Mi"
+
+---
+
+apiVersion: openchoreo.dev/v1alpha1
+kind: Workload
+metadata:
+  name: payment
+  namespace: default
+spec:
+  owner:
+    componentName: payment
+    projectName: gcp-microservice-demo
+  containers:
+    main:
+      image: us-central1-docker.pkg.dev/google-samples/microservices-demo/paymentservice:v0.10.3
+      env:
+        - key: DISABLE_PROFILER
+          value: "1"
+        - key: PORT
+          value: "50051"

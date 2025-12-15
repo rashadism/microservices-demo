@@ -1,0 +1,40 @@
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: ad
+  namespace: default
+spec:
+  owner:
+    projectName: gcp-microservice-demo
+
+  autoDeploy: true
+  componentType: deployment/service
+
+  parameters:
+    replicas: 1
+    port: 9555
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "128Mi"
+      limits:
+        cpu: "200m"
+        memory: "256Mi"
+
+---
+
+apiVersion: openchoreo.dev/v1alpha1
+kind: Workload
+metadata:
+  name: ad
+  namespace: default
+spec:
+  owner:
+    componentName: ad
+    projectName: gcp-microservice-demo
+  containers:
+    main:
+      image: us-central1-docker.pkg.dev/google-samples/microservices-demo/adservice:v0.10.3
+      env:
+        - key: PORT
+          value: "9555"
