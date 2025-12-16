@@ -35,7 +35,18 @@ FROM eclipse-temurin:25.0.1_8-jre-alpine@sha256:b51543f89580c1ba70e441cfbc0cfc16
 #     rm -rf profiler_java_agent.tar.gz
 
 WORKDIR /app
+
+# Download OpenTelemetry Java agent
+RUN wget -q -O /app/opentelemetry-javaagent.jar \
+    https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/download/v2.12.0/opentelemetry-javaagent.jar
 COPY --from=builder /app .
+
+# Set OpenTelemetry configuration via environment variables
+ENV OTEL_SERVICE_NAME=adservice
+ENV OTEL_TRACES_EXPORTER=otlp
+ENV OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://opentelemetry-collector.openchoreo-observability-plane.svc.cluster.local:4317
+ENV JAVA_TOOL_OPTIONS=-javaagent:/app/opentelemetry-javaagent.jar
 
 EXPOSE 9555
 ENTRYPOINT ["/app/build/install/hipstershop/bin/AdService"]

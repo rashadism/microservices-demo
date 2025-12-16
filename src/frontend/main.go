@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"os"
 	"time"
@@ -30,7 +31,9 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -55,7 +58,8 @@ var (
 		"TRY": true,
 	}
 
-	baseUrl = ""
+	baseUrl      = ""
+	MockBuildId  = ""
 )
 
 type ctxKeySessionID struct{}
@@ -102,6 +106,10 @@ func main() {
 	}
 	log.Out = os.Stdout
 
+	// Generate mock build ID (random 4-character hex string)
+	MockBuildId = fmt.Sprintf("%04x", rand.Intn(0x10000))
+	log.Infof("Generated build ID: %s", MockBuildId)
+
 	svc := new(frontendServer)
 
 	otel.SetTextMapPropagator(
@@ -112,7 +120,12 @@ func main() {
 
 	if os.Getenv("ENABLE_TRACING") == "1" {
 		log.Info("Tracing enabled.")
-		initTracing(log, ctx, svc)
+		tp, _ := initTracing(log, ctx, svc)
+		defer func() {
+			if err := tp.Shutdown(ctx); err != nil {
+				log.Warnf("Error shutting down tracer provider: %v", err)
+			}
+		}()
 	} else {
 		log.Info("Tracing disabled.")
 	}
@@ -175,17 +188,36 @@ func initStats(log logrus.FieldLogger) {
 }
 
 func initTracing(log logrus.FieldLogger, ctx context.Context, svc *frontendServer) (*sdktrace.TracerProvider, error) {
-	mustMapEnv(&svc.collectorAddr, "COLLECTOR_SERVICE_ADDR")
-	mustConnGRPC(ctx, &svc.collectorConn, svc.collectorAddr)
-	exporter, err := otlptracegrpc.New(
-		ctx,
-		otlptracegrpc.WithGRPCConn(svc.collectorConn))
+	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
+	defer cancel()
+
+	// Create resource with service name
+	res := resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceNameKey.String("frontend"),
+	)
+
+	// Get collector endpoint from env or use default
+	collectorEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if collectorEndpoint == "" {
+		collectorEndpoint = "opentelemetry-collector.openchoreo-observability-plane.svc.cluster.local:4317"
+	}
+
+	// Create OTLP gRPC exporter
+	exporter, err := otlptracegrpc.New(ctx,
+		otlptracegrpc.WithEndpoint(collectorEndpoint),
+		otlptracegrpc.WithInsecure(),
+	)
 	if err != nil {
 		log.Warnf("warn: Failed to create trace exporter: %v", err)
 	}
+
+	// Create TracerProvider with resource and exporter
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
-		sdktrace.WithSampler(sdktrace.AlwaysSample()))
+		sdktrace.WithResource(res),
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+	)
 	otel.SetTracerProvider(tp)
 
 	return tp, err

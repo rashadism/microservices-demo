@@ -31,6 +31,9 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
+	"go.opentelemetry.io/otel/trace"
 
 	pb "github.com/GoogleCloudPlatform/microservices-demo/src/frontend/genproto"
 	"github.com/GoogleCloudPlatform/microservices-demo/src/frontend/money"
@@ -351,8 +354,22 @@ func (fe *frontendServer) placeOrderHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Set baggage for distributed tracing
+	ctx := r.Context()
+	reqID, _ := ctx.Value(ctxKeyRequestID{}).(string)
+	sessionIDVal := sessionID(r)
+
+	userIdMember, _ := baggage.NewMember("app.user_id", sessionIDVal)
+	requestIdMember, _ := baggage.NewMember("app.request_id", reqID)
+	buildIdMember, _ := baggage.NewMember("app.build_id", MockBuildId)
+	bags := baggage.FromContext(ctx)
+	bags, _ = bags.SetMember(userIdMember)
+	bags, _ = bags.SetMember(requestIdMember)
+	bags, _ = bags.SetMember(buildIdMember)
+	ctx = baggage.ContextWithBaggage(ctx, bags)
+
 	order, err := pb.NewCheckoutServiceClient(fe.checkoutSvcConn).
-		PlaceOrder(r.Context(), &pb.PlaceOrderRequest{
+		PlaceOrder(ctx, &pb.PlaceOrderRequest{
 			Email: payload.Email,
 			CreditCard: &pb.CreditCardInfo{
 				CreditCardNumber:          payload.CcNumber,
@@ -382,6 +399,14 @@ func (fe *frontendServer) placeOrderHandler(w http.ResponseWriter, r *http.Reque
 		multPrice := money.MultiplySlow(*v.GetCost(), uint32(v.GetItem().GetQuantity()))
 		totalPaid = money.Must(money.Sum(totalPaid, multPrice))
 	}
+
+	// Add cart total to span
+	span := trace.SpanFromContext(ctx)
+	totalPaidNum, _ := strconv.ParseFloat(
+		fmt.Sprintf("%d.%02d", totalPaid.GetUnits(), totalPaid.GetNanos()/10000000),
+		64,
+	)
+	span.SetAttributes(attribute.Key("app.cart_total").Float64(totalPaidNum))
 
 	currencies, err := fe.getCurrencies(r.Context())
 	if err != nil {

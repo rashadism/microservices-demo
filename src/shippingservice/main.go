@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -22,7 +23,14 @@ import (
 
 	"cloud.google.com/go/profiler"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/net/context"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
@@ -54,10 +62,21 @@ func init() {
 }
 
 func main() {
+	ctx := context.Background()
+
+	// Set up composite propagator
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{}, propagation.Baggage{}))
+
 	if os.Getenv("DISABLE_TRACING") == "" {
-		log.Info("Tracing enabled, but temporarily unavailable")
-		log.Info("See https://github.com/GoogleCloudPlatform/microservices-demo/issues/422 for more info.")
-		go initTracing()
+		log.Info("Tracing enabled.")
+		tp := initTracing()
+		defer func() {
+			if err := tp.Shutdown(ctx); err != nil {
+				log.Warnf("Error shutting down tracer provider: %v", err)
+			}
+		}()
 	} else {
 		log.Info("Tracing disabled.")
 	}
@@ -82,11 +101,15 @@ func main() {
 
 	var srv *grpc.Server
 	if os.Getenv("DISABLE_STATS") == "" {
-		log.Info("Stats enabled, but temporarily unavailable")
-		srv = grpc.NewServer()
+		log.Info("Stats enabled.")
+		srv = grpc.NewServer(
+			grpc.StatsHandler(otelgrpc.NewServerHandler()),
+		)
 	} else {
 		log.Info("Stats disabled.")
-		srv = grpc.NewServer()
+		srv = grpc.NewServer(
+			grpc.StatsHandler(otelgrpc.NewServerHandler()),
+		)
 	}
 	svc := &server{}
 	pb.RegisterShippingServiceServer(srv, svc)
@@ -117,8 +140,17 @@ func (s *server) Watch(req *healthpb.HealthCheckRequest, ws healthpb.Health_Watc
 
 // GetQuote produces a shipping quote (cost) in USD.
 func (s *server) GetQuote(ctx context.Context, in *pb.GetQuoteRequest) (*pb.GetQuoteResponse, error) {
-	log.Info("[GetQuote] received request")
-	defer log.Info("[GetQuote] completed request")
+	// Enrich logger with trace context
+	logEntry := log.WithFields(logrus.Fields{})
+	span := trace.SpanFromContext(ctx)
+	if span.SpanContext().IsValid() {
+		logEntry = logEntry.WithFields(logrus.Fields{
+			"trace_id": span.SpanContext().TraceID().String(),
+			"span_id":  span.SpanContext().SpanID().String(),
+		})
+	}
+	logEntry.Info("[GetQuote] received request")
+	defer logEntry.Info("[GetQuote] completed request")
 
 	// 1. Generate a quote based on the total number of items to be shipped.
 	quote := CreateQuoteFromCount(0)
@@ -136,8 +168,17 @@ func (s *server) GetQuote(ctx context.Context, in *pb.GetQuoteRequest) (*pb.GetQ
 // ShipOrder mocks that the requested items will be shipped.
 // It supplies a tracking ID for notional lookup of shipment delivery status.
 func (s *server) ShipOrder(ctx context.Context, in *pb.ShipOrderRequest) (*pb.ShipOrderResponse, error) {
-	log.Info("[ShipOrder] received request")
-	defer log.Info("[ShipOrder] completed request")
+	// Enrich logger with trace context
+	logEntry := log.WithFields(logrus.Fields{})
+	span := trace.SpanFromContext(ctx)
+	if span.SpanContext().IsValid() {
+		logEntry = logEntry.WithFields(logrus.Fields{
+			"trace_id": span.SpanContext().TraceID().String(),
+			"span_id":  span.SpanContext().SpanID().String(),
+		})
+	}
+	logEntry.Info("[ShipOrder] received request")
+	defer logEntry.Info("[ShipOrder] completed request")
 	// 1. Create a Tracking ID
 	baseAddress := fmt.Sprintf("%s, %s, %s", in.Address.StreetAddress, in.Address.City, in.Address.State)
 	id := CreateTrackingId(baseAddress)
@@ -152,8 +193,41 @@ func initStats() {
 	//TODO(arbrown) Implement OpenTelemetry stats
 }
 
-func initTracing() {
-	// TODO(arbrown) Implement OpenTelemetry tracing
+func initTracing() *sdktrace.TracerProvider {
+	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
+	defer cancel()
+
+	// Create resource with service name
+	res := resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceNameKey.String("shipping"),
+	)
+
+	// Get collector endpoint from env or use default
+	collectorEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if collectorEndpoint == "" {
+		collectorEndpoint = "opentelemetry-collector.openchoreo-observability-plane.svc.cluster.local:4317"
+	}
+
+	// Create OTLP gRPC exporter
+	exporter, err := otlptracegrpc.New(ctx,
+		otlptracegrpc.WithEndpoint(collectorEndpoint),
+		otlptracegrpc.WithInsecure(),
+	)
+	if err != nil {
+		log.Warnf("warn: Failed to create trace exporter: %v", err)
+	}
+
+	// Create TracerProvider with resource and exporter
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(res),
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+	)
+	otel.SetTracerProvider(tp)
+
+	return tp
 }
 
 func initProfiling(service, version string) {

@@ -33,7 +33,9 @@ from opentelemetry import trace
 from opentelemetry.instrumentation.grpc import GrpcInstrumentorClient, GrpcInstrumentorServer
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.resources import Resource
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.semconv.resource import ResourceAttributes
 
 from logger import getJSONLogger
 logger = getJSONLogger('recommendationservice-server')
@@ -66,6 +68,14 @@ def initStackdriverProfiling():
 class RecommendationService(demo_pb2_grpc.RecommendationServiceServicer):
     def ListRecommendations(self, request, context):
         max_responses = 5
+
+        # Add trace context to logs
+        span = trace.get_current_span()
+        log_fields = {}
+        if span and span.get_span_context().trace_id:
+            log_fields['trace_id'] = format(span.get_span_context().trace_id, '032x')
+            log_fields['span_id'] = format(span.get_span_context().span_id, '016x')
+
         # fetch list of products from product catalog stub
         cat_response = product_catalog_stub.ListProducts(demo_pb2.Empty())
         product_ids = [x.id for x in cat_response.products]
@@ -76,7 +86,7 @@ class RecommendationService(demo_pb2_grpc.RecommendationServiceServicer):
         indices = random.sample(range(num_products), num_return)
         # fetch product ids from indices
         prod_list = [filtered_products[i] for i in indices]
-        logger.info("[Recv ListRecommendations] product_ids={}".format(prod_list))
+        logger.info("[Recv ListRecommendations] product_ids={}".format(prod_list), extra=log_fields)
         # build and return response
         response = demo_pb2.ListRecommendationsResponse()
         response.product_ids.extend(prod_list)
@@ -109,8 +119,17 @@ if __name__ == "__main__":
       grpc_server_instrumentor = GrpcInstrumentorServer()
       grpc_server_instrumentor.instrument()
       if os.environ["ENABLE_TRACING"] == "1":
-        trace.set_tracer_provider(TracerProvider())
-        otel_endpoint = os.getenv("COLLECTOR_SERVICE_ADDR", "localhost:4317")
+        # Get collector endpoint from env or use default
+        otel_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT",
+                                  "opentelemetry-collector.openchoreo-observability-plane.svc.cluster.local:4317")
+
+        # Create resource with service name
+        resource = Resource(attributes={
+          ResourceAttributes.SERVICE_NAME: "recommendationservice",
+          ResourceAttributes.SERVICE_VERSION: "1.0.0",
+        })
+
+        trace.set_tracer_provider(TracerProvider(resource=resource))
         trace.get_tracer_provider().add_span_processor(
           BatchSpanProcessor(
               OTLPSpanExporter(
@@ -119,6 +138,7 @@ if __name__ == "__main__":
             )
           )
         )
+        logger.info("Tracing enabled.")
     except (KeyError, DefaultCredentialsError):
         logger.info("Tracing disabled.")
     except Exception as e:

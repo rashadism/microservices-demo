@@ -37,7 +37,9 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"google.golang.org/grpc"
 )
 
@@ -66,11 +68,17 @@ func init() {
 }
 
 func main() {
+	ctx := context.Background()
 	if os.Getenv("ENABLE_TRACING") == "1" {
-		err := initTracing()
+		tp, err := initTracing()
 		if err != nil {
 			log.Warnf("warn: failed to start tracer: %+v", err)
 		}
+		defer func() {
+			if err := tp.Shutdown(ctx); err != nil {
+				log.Warnf("Error shutting down tracer provider: %v", err)
+			}
+		}()
 	} else {
 		log.Info("Tracing disabled.")
 	}
@@ -152,28 +160,41 @@ func initStats() {
 	// TODO(drewbr) Implement OpenTelemetry stats
 }
 
-func initTracing() error {
-	var (
-		collectorAddr string
-		collectorConn *grpc.ClientConn
+func initTracing() (*sdktrace.TracerProvider, error) {
+	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
+	defer cancel()
+
+	// Create resource with service name
+	res := resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceNameKey.String("productcatalog"),
 	)
 
-	ctx := context.Background()
+	// Get collector endpoint from env or use default
+	collectorEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if collectorEndpoint == "" {
+		collectorEndpoint = "opentelemetry-collector.openchoreo-observability-plane.svc.cluster.local:4317"
+	}
 
-	mustMapEnv(&collectorAddr, "COLLECTOR_SERVICE_ADDR")
-	mustConnGRPC(ctx, &collectorConn, collectorAddr)
-
-	exporter, err := otlptracegrpc.New(
-		ctx,
-		otlptracegrpc.WithGRPCConn(collectorConn))
+	// Create OTLP gRPC exporter
+	exporter, err := otlptracegrpc.New(ctx,
+		otlptracegrpc.WithEndpoint(collectorEndpoint),
+		otlptracegrpc.WithInsecure(),
+	)
 	if err != nil {
 		log.Warnf("warn: Failed to create trace exporter: %v", err)
 	}
+
+	// Create TracerProvider with resource and exporter
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
-		sdktrace.WithSampler(sdktrace.AlwaysSample()))
+		sdktrace.WithResource(res),
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+	)
 	otel.SetTracerProvider(tp)
-	return err
+
+	return tp, err
 }
 
 func initProfiling(service, version string) {

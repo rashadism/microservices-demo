@@ -22,6 +22,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type ctxKeyLog struct{}
@@ -61,11 +62,22 @@ func (lh *logHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	rr := &responseRecorder{w: w}
-	log := lh.log.WithFields(logrus.Fields{
+
+	// Extract trace context for log correlation
+	logFields := logrus.Fields{
 		"http.req.path":   r.URL.Path,
 		"http.req.method": r.Method,
 		"http.req.id":     requestID.String(),
-	})
+	}
+
+	// Add trace context if available
+	span := trace.SpanFromContext(ctx)
+	if span.SpanContext().IsValid() {
+		logFields["trace_id"] = span.SpanContext().TraceID().String()
+		logFields["span_id"] = span.SpanContext().SpanID().String()
+	}
+
+	log := lh.log.WithFields(logFields)
 	if v, ok := r.Context().Value(ctxKeySessionID{}).(string); ok {
 		log = log.WithField("session", v)
 	}
@@ -108,4 +120,16 @@ func ensureSessionID(next http.Handler) http.HandlerFunc {
 		r = r.WithContext(ctx)
 		next.ServeHTTP(w, r)
 	}
+}
+
+// getLoggerWithTrace returns a logger enriched with trace context from the given context
+func getLoggerWithTrace(ctx context.Context, logger *logrus.Entry) *logrus.Entry {
+	span := trace.SpanFromContext(ctx)
+	if span.SpanContext().IsValid() {
+		return logger.WithFields(logrus.Fields{
+			"trace_id": span.SpanContext().TraceID().String(),
+			"span_id":  span.SpanContext().SpanID().String(),
+		})
+	}
+	return logger
 }

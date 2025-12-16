@@ -10,6 +10,9 @@ using Microsoft.Extensions.Hosting;
 using cartservice.cartstore;
 using cartservice.services;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+using OpenTelemetry.Exporter;
 
 namespace cartservice
 {
@@ -55,8 +58,39 @@ namespace cartservice
                 services.AddSingleton<ICartStore, RedisCartStore>();
             }
 
-
             services.AddGrpc();
+
+            // Configure OpenTelemetry Tracing
+            var enableTracing = Configuration["ENABLE_TRACING"];
+            if (enableTracing == "1")
+            {
+                Console.WriteLine("OpenTelemetry tracing enabled.");
+
+                var serviceName = Configuration["OTEL_SERVICE_NAME"] ?? "cartservice";
+                var otlpEndpoint = Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]
+                    ?? "http://opentelemetry-collector.openchoreo-observability-plane.svc.cluster.local:4317";
+
+                services.AddOpenTelemetry()
+                    .WithTracing(builder => builder
+                        .SetResourceBuilder(ResourceBuilder.CreateDefault()
+                            .AddService(serviceName)
+                            .AddAttributes(new System.Collections.Generic.Dictionary<string, object>
+                            {
+                                ["service.version"] = "1.0.0"
+                            }))
+                        .AddAspNetCoreInstrumentation()
+                        .AddHttpClientInstrumentation()
+                        .AddGrpcClientInstrumentation()
+                        .AddOtlpExporter(otlpOptions =>
+                        {
+                            otlpOptions.Endpoint = new Uri(otlpEndpoint);
+                            otlpOptions.Protocol = OtlpExportProtocol.Grpc;
+                        }));
+            }
+            else
+            {
+                Console.WriteLine("OpenTelemetry tracing disabled.");
+            }
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.

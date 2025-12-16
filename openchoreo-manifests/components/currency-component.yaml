@@ -40,3 +40,9 @@ spec:
           value: "1"
         - key: PORT
           value: "7000"
+        - key: ENABLE_TRACING
+          value: "1"
+        - key: OTEL_SERVICE_NAME
+          value: "currencyservice"
+        - key: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "opentelemetry-collector.openchoreo-observability-plane.svc.cluster.local:4317"

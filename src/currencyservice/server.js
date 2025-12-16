@@ -50,19 +50,23 @@ registerInstrumentations({
 if(process.env.ENABLE_TRACING == "1") {
   logger.info("Tracing enabled.")
 
-  const { resourceFromAttributes } = require('@opentelemetry/resources');
-
-  const { ATTR_SERVICE_NAME } = require('@opentelemetry/semantic-conventions');
+  const { Resource } = require('@opentelemetry/resources');
+  const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } = require('@opentelemetry/semantic-conventions');
+  const { SEMRESATTRS_SCHEMA_URL } = require('@opentelemetry/semantic-conventions');
 
   const opentelemetry = require('@opentelemetry/sdk-node');
 
   const { OTLPTraceExporter } = require('@opentelemetry/exporter-otlp-grpc');
 
-  const collectorUrl = process.env.COLLECTOR_SERVICE_ADDR;
+  // Get collector endpoint from env or use default
+  const collectorUrl = process.env.OTEL_EXPORTER_OTLP_ENDPOINT ||
+                       'opentelemetry-collector.openchoreo-observability-plane.svc.cluster.local:4317';
+
   const traceExporter = new OTLPTraceExporter({url: collectorUrl});
   const sdk = new opentelemetry.NodeSDK({
-    resource: resourceFromAttributes({
+    resource: new Resource({
       [ ATTR_SERVICE_NAME ]: process.env.OTEL_SERVICE_NAME || 'currencyservice',
+      'schema_url': SEMRESATTRS_SCHEMA_URL,
     }),
     traceExporter: traceExporter,
   });
@@ -126,7 +130,14 @@ function _carry (amount) {
  * Lists the supported currencies
  */
 function getSupportedCurrencies (call, callback) {
-  logger.info('Getting supported currencies...');
+  const opentelemetry = require('@opentelemetry/api');
+  const span = opentelemetry.trace.getSpan(opentelemetry.context.active());
+  const logContext = {};
+  if (span && span.spanContext().traceId) {
+    logContext.trace_id = span.spanContext().traceId;
+    logContext.span_id = span.spanContext().spanId;
+  }
+  logger.info(logContext, 'Getting supported currencies...');
   _getCurrencyData((data) => {
     callback(null, {currency_codes: Object.keys(data)});
   });
@@ -136,6 +147,14 @@ function getSupportedCurrencies (call, callback) {
  * Converts between currencies
  */
 function convert (call, callback) {
+  const opentelemetry = require('@opentelemetry/api');
+  const span = opentelemetry.trace.getSpan(opentelemetry.context.active());
+  const logContext = {};
+  if (span && span.spanContext().traceId) {
+    logContext.trace_id = span.spanContext().traceId;
+    logContext.span_id = span.spanContext().spanId;
+  }
+
   try {
     _getCurrencyData((data) => {
       const request = call.request;
@@ -159,11 +178,11 @@ function convert (call, callback) {
       result.nanos = Math.floor(result.nanos);
       result.currency_code = request.to_code;
 
-      logger.info(`conversion request successful`);
+      logger.info(logContext, `conversion request successful`);
       callback(null, result);
     });
   } catch (err) {
-    logger.error(`conversion request failed: ${err}`);
+    logger.error(logContext, `conversion request failed: ${err}`);
     callback(err.message);
   }
 }

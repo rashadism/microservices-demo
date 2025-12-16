@@ -34,9 +34,9 @@ if (process.env.DISABLE_PROFILER) {
 if (process.env.ENABLE_TRACING == "1") {
   logger.info("Tracing enabled.")
 
-  const { resourceFromAttributes } = require('@opentelemetry/resources');
-
-  const { ATTR_SERVICE_NAME }= require('@opentelemetry/semantic-conventions');
+  const { Resource } = require('@opentelemetry/resources');
+  const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } = require('@opentelemetry/semantic-conventions');
+  const { SEMRESATTRS_SCHEMA_URL } = require('@opentelemetry/semantic-conventions');
 
   const { GrpcInstrumentation } = require('@opentelemetry/instrumentation-grpc');
   const { registerInstrumentations } = require('@opentelemetry/instrumentation');
@@ -44,12 +44,16 @@ if (process.env.ENABLE_TRACING == "1") {
 
   const { OTLPTraceExporter } = require('@opentelemetry/exporter-otlp-grpc');
 
-  const collectorUrl = process.env.COLLECTOR_SERVICE_ADDR;
+  // Get collector endpoint from env or use default
+  const collectorUrl = process.env.OTEL_EXPORTER_OTLP_ENDPOINT ||
+                       'opentelemetry-collector.openchoreo-observability-plane.svc.cluster.local:4317';
+
   const traceExporter = new OTLPTraceExporter({url: collectorUrl});
 
   const sdk = new opentelemetry.NodeSDK({
-    resource: resourceFromAttributes({
+    resource: new Resource({
       [ATTR_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME || 'paymentservice',
+      'schema_url': SEMRESATTRS_SCHEMA_URL,
     }),
     traceExporter: traceExporter,
   });

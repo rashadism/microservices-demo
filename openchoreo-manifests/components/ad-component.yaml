@@ -38,3 +38,11 @@ spec:
       env:
         - key: PORT
           value: "9555"
+        - key: OTEL_SERVICE_NAME
+          value: "adservice"
+        - key: OTEL_TRACES_EXPORTER
+          value: "otlp"
+        - key: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "grpc"
+        - key: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://opentelemetry-collector.openchoreo-observability-plane.svc.cluster.local:4317"

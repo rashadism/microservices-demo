@@ -34,7 +34,9 @@ from opentelemetry import trace
 from opentelemetry.instrumentation.grpc import GrpcInstrumentorServer
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.resources import Resource
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.semconv.resource import ResourceAttributes
 
 import googlecloudprofiler
 
@@ -106,7 +108,14 @@ class EmailService(BaseEmailService):
 
 class DummyEmailService(BaseEmailService):
   def SendOrderConfirmation(self, request, context):
-    logger.info('A request to send order confirmation email to {} has been received.'.format(request.email))
+    # Add trace context to logs
+    span = trace.get_current_span()
+    log_fields = {}
+    if span and span.get_span_context().trace_id:
+      log_fields['trace_id'] = format(span.get_span_context().trace_id, '032x')
+      log_fields['span_id'] = format(span.get_span_context().span_id, '016x')
+
+    logger.info('A request to send order confirmation email to {} has been received.'.format(request.email), extra=log_fields)
     return demo_pb2.Empty()
 
 class HealthCheck():
@@ -177,8 +186,17 @@ if __name__ == '__main__':
   # Tracing
   try:
     if os.environ["ENABLE_TRACING"] == "1":
-      otel_endpoint = os.getenv("COLLECTOR_SERVICE_ADDR", "localhost:4317")
-      trace.set_tracer_provider(TracerProvider())
+      # Get collector endpoint from env or use default
+      otel_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT",
+                                "opentelemetry-collector.openchoreo-observability-plane.svc.cluster.local:4317")
+
+      # Create resource with service name
+      resource = Resource(attributes={
+        ResourceAttributes.SERVICE_NAME: "emailservice",
+        ResourceAttributes.SERVICE_VERSION: "1.0.0",
+      })
+
+      trace.set_tracer_provider(TracerProvider(resource=resource))
       trace.get_tracer_provider().add_span_processor(
         BatchSpanProcessor(
             OTLPSpanExporter(
@@ -187,6 +205,7 @@ if __name__ == '__main__':
           )
         )
       )
+      logger.info("Tracing enabled.")
     grpc_server_instrumentor = GrpcInstrumentorServer()
     grpc_server_instrumentor.instrument()
 

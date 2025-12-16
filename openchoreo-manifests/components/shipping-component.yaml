@@ -40,3 +40,7 @@ spec:
           value: "1"
         - key: PORT
           value: "50055"
+        - key: OTEL_SERVICE_NAME
+          value: "shipping"
+        - key: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "opentelemetry-collector.openchoreo-observability-plane.svc.cluster.local:4317"

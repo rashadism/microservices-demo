@@ -52,3 +52,9 @@ spec:
           value: "currency:80"
         - key: CART_SERVICE_ADDR
           value: "cart:80"
+        - key: ENABLE_TRACING
+          value: "1"
+        - key: OTEL_SERVICE_NAME
+          value: "checkout"
+        - key: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "opentelemetry-collector.openchoreo-observability-plane.svc.cluster.local:4317"

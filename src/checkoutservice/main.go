@@ -37,9 +37,14 @@ import (
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
 
 const (
@@ -47,7 +52,17 @@ const (
 	usdCurrency = "USD"
 )
 
-var log *logrus.Logger
+var (
+	log       *logrus.Logger
+	cachesize = 20 // Mock cache size for tracing demo
+
+	// Span attribute keys
+	cachesizeKey = attribute.Key("app.cache_size")
+	userIDKey    = attribute.Key("app.user_id")
+	orderIDKey   = attribute.Key("app.order_id")
+	requestIDKey = attribute.Key("app.request_id")
+	buildIdKey   = attribute.Key("app.build_id")
+)
 
 func init() {
 	log = logrus.New()
@@ -89,8 +104,12 @@ func main() {
 	ctx := context.Background()
 	if os.Getenv("ENABLE_TRACING") == "1" {
 		log.Info("Tracing enabled.")
-		initTracing()
-
+		tp := initTracing()
+		defer func() {
+			if err := tp.Shutdown(ctx); err != nil {
+				log.Warnf("Error shutting down tracer provider: %v", err)
+			}
+		}()
 	} else {
 		log.Info("Tracing disabled.")
 	}
@@ -151,30 +170,41 @@ func initStats() {
 	//TODO(arbrown) Implement OpenTelemetry stats
 }
 
-func initTracing() {
-	var (
-		collectorAddr string
-		collectorConn *grpc.ClientConn
-	)
-
+func initTracing() *sdktrace.TracerProvider {
 	ctx := context.Background()
-	ctx, cancel := context.WithTimeout(ctx, time.Second*3)
+	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
 	defer cancel()
 
-	mustMapEnv(&collectorAddr, "COLLECTOR_SERVICE_ADDR")
-	mustConnGRPC(ctx, &collectorConn, collectorAddr)
+	// Create resource with service name
+	res := resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceNameKey.String("checkout"),
+	)
 
-	exporter, err := otlptracegrpc.New(
-		ctx,
-		otlptracegrpc.WithGRPCConn(collectorConn))
+	// Get collector endpoint from env or use default
+	collectorEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if collectorEndpoint == "" {
+		collectorEndpoint = "opentelemetry-collector.openchoreo-observability-plane.svc.cluster.local:4317"
+	}
+
+	// Create OTLP gRPC exporter
+	exporter, err := otlptracegrpc.New(ctx,
+		otlptracegrpc.WithEndpoint(collectorEndpoint),
+		otlptracegrpc.WithInsecure(),
+	)
 	if err != nil {
 		log.Warnf("warn: Failed to create trace exporter: %v", err)
 	}
+
+	// Create TracerProvider with resource and exporter
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
-		sdktrace.WithSampler(sdktrace.AlwaysSample()))
+		sdktrace.WithResource(res),
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+	)
 	otel.SetTracerProvider(tp)
 
+	return tp
 }
 
 func initProfiling(service, version string) {
@@ -228,12 +258,44 @@ func (cs *checkoutService) Watch(req *healthpb.HealthCheckRequest, ws healthpb.H
 }
 
 func (cs *checkoutService) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (*pb.PlaceOrderResponse, error) {
-	log.Infof("[PlaceOrder] user_id=%q user_currency=%q", req.UserId, req.UserCurrency)
+	// Read baggage from upstream (Frontend)
+	bags := baggage.FromContext(ctx)
+	userID := bags.Member("app.user_id").Value()
+	requestID := bags.Member("app.request_id").Value()
+	buildId := bags.Member("app.build_id").Value()
+
+	// Enrich logger with trace context
+	logEntry := log.WithFields(logrus.Fields{})
+	span := trace.SpanFromContext(ctx)
+	if span.SpanContext().IsValid() {
+		logEntry = logEntry.WithFields(logrus.Fields{
+			"trace_id": span.SpanContext().TraceID().String(),
+			"span_id":  span.SpanContext().SpanID().String(),
+		})
+	}
+	logEntry.Infof("[PlaceOrder] user_id=%q user_currency=%q", req.UserId, req.UserCurrency)
 
 	orderID, err := uuid.NewUUID()
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to generate order uuid")
 	}
+
+	// Add order ID to baggage for downstream services
+	orderIDMember, _ := baggage.NewMember("app.order_id", orderID.String())
+	bags, _ = bags.SetMember(orderIDMember)
+	ctx = baggage.ContextWithBaggage(ctx, bags)
+
+	// Add custom span attributes
+	span.SetAttributes(
+		cachesizeKey.Int(cachesize),
+		userIDKey.String(userID),
+		orderIDKey.String(orderID.String()),
+		requestIDKey.String(requestID),
+		buildIdKey.String(buildId),
+	)
+
+	// Mock database call for discount lookup
+	mockDatabaseCall(ctx, 50, "SELECT checkout.discounts", "SELECT * FROM discounts WHERE user_id = ?")
 
 	prep, err := cs.prepareOrderItemsAndShippingQuoteFromCart(ctx, req.UserId, req.UserCurrency, req.Address)
 	if err != nil {
@@ -249,18 +311,46 @@ func (cs *checkoutService) PlaceOrder(ctx context.Context, req *pb.PlaceOrderReq
 		total = money.Must(money.Sum(total, multPrice))
 	}
 
+	// Add "prepared" span event
+	span.AddEvent("prepared", trace.WithAttributes(
+		orderIDKey.String(orderID.String()),
+		userIDKey.String(userID),
+		attribute.String("currency", req.UserCurrency),
+	))
+
 	txID, err := cs.chargeCard(ctx, &total, req.CreditCard)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to charge card: %+v", err)
 	}
-	log.Infof("payment went through (transaction_id: %s)", txID)
+	logEntry.Infof("payment went through (transaction_id: %s)", txID)
+
+	// Add "charged" span event
+	amt := float64(total.Units) + float64(total.Nanos)/1e9
+	span.AddEvent("charged", trace.WithAttributes(
+		orderIDKey.String(orderID.String()),
+		userIDKey.String(userID),
+		attribute.String("currency", req.UserCurrency),
+		attribute.Float64("chargeTotal", amt),
+	))
 
 	shippingTrackingID, err := cs.shipOrder(ctx, req.Address, prep.cartItems)
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "shipping error: %+v", err)
 	}
 
-	_ = cs.emptyUserCart(ctx, req.UserId)
+	// Add "shipped" span event
+	span.AddEvent("shipped", trace.WithAttributes(
+		orderIDKey.String(orderID.String()),
+		userIDKey.String(userID),
+		attribute.Int("itemCount", len(prep.cartItems)),
+		attribute.String("orderItems", fmt.Sprintf("%+v", prep.orderItems)),
+	))
+
+	// Empty cart asynchronously with trace context
+	go func() {
+		asyncCtx := trace.ContextWithSpan(context.Background(), span)
+		_ = cs.emptyUserCart(asyncCtx, req.UserId)
+	}()
 
 	orderResult := &pb.OrderResult{
 		OrderId:            orderID.String(),
@@ -270,11 +360,16 @@ func (cs *checkoutService) PlaceOrder(ctx context.Context, req *pb.PlaceOrderReq
 		Items:              prep.orderItems,
 	}
 
-	if err := cs.sendOrderConfirmation(ctx, req.Email, orderResult); err != nil {
-		log.Warnf("failed to send order confirmation to %q: %+v", req.Email, err)
-	} else {
-		log.Infof("order confirmation email sent to %q", req.Email)
-	}
+	// Send order confirmation asynchronously with trace context
+	go func() {
+		asyncCtx := trace.ContextWithSpan(context.Background(), span)
+		if err := cs.sendOrderConfirmation(asyncCtx, req.Email, orderResult); err != nil {
+			logEntry.Warnf("failed to send order confirmation to %q: %+v", req.Email, err)
+		} else {
+			logEntry.Infof("order confirmation email sent to %q", req.Email)
+		}
+	}()
+
 	resp := &pb.PlaceOrderResponse{Order: orderResult}
 	return resp, nil
 }
@@ -391,4 +486,21 @@ func (cs *checkoutService) shipOrder(ctx context.Context, address *pb.Address, i
 		return "", fmt.Errorf("shipment failed: %+v", err)
 	}
 	return resp.GetTrackingId(), nil
+}
+
+// mockDatabaseCall simulates a database operation with a child span
+func mockDatabaseCall(ctx context.Context, maxTime int, name, query string) {
+	tracer := otel.GetTracerProvider().Tracer("")
+	ctx, span := tracer.Start(ctx, name)
+	span.SetAttributes(
+		attribute.String("db.statement", query),
+		attribute.String("db.name", "checkout"),
+	)
+	defer span.End()
+	sleepRandom(maxTime)
+}
+
+// sleepRandom simulates latency with random duration up to maxTime milliseconds
+func sleepRandom(maxTime int) {
+	time.Sleep(time.Duration(time.Now().UnixNano()%int64(maxTime)) * time.Millisecond)
 }
