@@ -34,7 +34,7 @@ spec:
     projectName: gcp-microservice-demo
   containers:
     main:
-      image: us-central1-docker.pkg.dev/google-samples/microservices-demo/adservice:v0.10.3
+      image: rashadxyz/adservice:v3
       env:
         - key: PORT
           value: "9555"

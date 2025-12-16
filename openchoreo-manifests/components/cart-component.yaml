@@ -34,7 +34,7 @@ spec:
     projectName: gcp-microservice-demo
   containers:
     main:
-      image: us-central1-docker.pkg.dev/google-samples/microservices-demo/cartservice:v0.10.3
+      image: rashadxyz/cartservice:v3
       env:
         - key: PORT
           value: "7070"

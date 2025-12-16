@@ -34,7 +34,7 @@ spec:
     projectName: gcp-microservice-demo
   containers:
     main:
-      image: us-central1-docker.pkg.dev/google-samples/microservices-demo/emailservice:v0.10.3
+      image: rashadxyz/emailservice:v3
       env:
         - key: DISABLE_PROFILER
           value: "1"
