@@ -1,0 +1,37 @@
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: redis
+  namespace: default
+spec:
+  owner:
+    projectName: microservices-demo
+
+  componentType: deployment/service
+  autoDeploy: true
+
+  parameters:
+    replicas: 1
+    port: 6379
+    resources:
+      requests:
+        cpu: "70m"
+        memory: "200Mi"
+      limits:
+        cpu: "125m"
+        memory: "256Mi"
+
+---
+
+apiVersion: openchoreo.dev/v1alpha1
+kind: Workload
+metadata:
+  name: redis
+  namespace: default
+spec:
+  owner:
+    componentName: redis
+    projectName: microservices-demo
+  containers:
+    main:
+      image: redis:alpine

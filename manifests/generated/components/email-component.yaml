@@ -1,0 +1,44 @@
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: email
+  namespace: default
+spec:
+  owner:
+    projectName: microservices-demo
+
+  componentType: deployment/service
+  autoDeploy: true
+
+  parameters:
+    replicas: 1
+    port: 8080
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "64Mi"
+      limits:
+        cpu: "200m"
+        memory: "128Mi"
+
+---
+
+apiVersion: openchoreo.dev/v1alpha1
+kind: Workload
+metadata:
+  name: email
+  namespace: default
+spec:
+  owner:
+    componentName: email
+    projectName: microservices-demo
+  containers:
+    main:
+      image: emailservice:v1
+      env:
+        - key: PORT
+          value: "8080"
+        - key: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "opentelemetry-collector.openchoreo-observability-plane:4317"
+        - key: OTEL_SERVICE_NAME
+          value: "emailservice"

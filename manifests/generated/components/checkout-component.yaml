@@ -1,0 +1,56 @@
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: checkout
+  namespace: default
+spec:
+  owner:
+    projectName: microservices-demo
+
+  componentType: deployment/service
+  autoDeploy: true
+
+  parameters:
+    replicas: 1
+    port: 5050
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "64Mi"
+      limits:
+        cpu: "200m"
+        memory: "128Mi"
+
+---
+
+apiVersion: openchoreo.dev/v1alpha1
+kind: Workload
+metadata:
+  name: checkout
+  namespace: default
+spec:
+  owner:
+    componentName: checkout
+    projectName: microservices-demo
+  containers:
+    main:
+      image: checkoutservice:v1
+      env:
+        - key: PORT
+          value: "5050"
+        - key: PRODUCT_CATALOG_SERVICE_ADDR
+          value: "productcatalog:80"
+        - key: SHIPPING_SERVICE_ADDR
+          value: "shipping:80"
+        - key: PAYMENT_SERVICE_ADDR
+          value: "payment:80"
+        - key: EMAIL_SERVICE_ADDR
+          value: "email:80"
+        - key: CURRENCY_SERVICE_ADDR
+          value: "currency:80"
+        - key: CART_SERVICE_ADDR
+          value: "cart:80"
+        - key: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "opentelemetry-collector.openchoreo-observability-plane:4317"
+        - key: OTEL_SERVICE_NAME
+          value: "checkoutservice"

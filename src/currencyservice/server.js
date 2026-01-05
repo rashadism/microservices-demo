@@ -25,53 +25,34 @@ const logger = pino({
   }
 });
 
-if(process.env.DISABLE_PROFILER) {
-  logger.info("Profiler disabled.")
-}
-else {
-  logger.info("Profiler enabled.")
-  require('@google-cloud/profiler').start({
-    serviceContext: {
-      service: 'currencyservice',
-      version: '1.0.0'
-    }
-  });
-}
-
-// Register GRPC OTel Instrumentation for trace propagation
-// regardless of whether tracing is emitted.
+// OpenTelemetry tracing - always enabled for OpenChoreo
+const { resourceFromAttributes } = require('@opentelemetry/resources');
+const { ATTR_SERVICE_NAME } = require('@opentelemetry/semantic-conventions');
+const opentelemetry = require('@opentelemetry/sdk-node');
+const { OTLPTraceExporter } = require('@opentelemetry/exporter-otlp-grpc');
 const { GrpcInstrumentation } = require('@opentelemetry/instrumentation-grpc');
-const { registerInstrumentations } = require('@opentelemetry/instrumentation');
 
-registerInstrumentations({
-  instrumentations: [new GrpcInstrumentation()]
+const collectorUrl = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'grpc://opentelemetry-collector:4317';
+logger.info(`Initializing tracing, exporting to ${collectorUrl}`);
+
+const traceExporter = new OTLPTraceExporter({url: collectorUrl});
+const sdk = new opentelemetry.NodeSDK({
+  resource: resourceFromAttributes({
+    [ATTR_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME || 'currencyservice',
+  }),
+  traceExporter: traceExporter,
+  instrumentations: [new GrpcInstrumentation()],
 });
 
-if(process.env.ENABLE_TRACING == "1") {
-  logger.info("Tracing enabled.")
+sdk.start();
+logger.info("Tracing initialized successfully");
 
-  const { resourceFromAttributes } = require('@opentelemetry/resources');
-
-  const { ATTR_SERVICE_NAME } = require('@opentelemetry/semantic-conventions');
-
-  const opentelemetry = require('@opentelemetry/sdk-node');
-
-  const { OTLPTraceExporter } = require('@opentelemetry/exporter-otlp-grpc');
-
-  const collectorUrl = process.env.COLLECTOR_SERVICE_ADDR;
-  const traceExporter = new OTLPTraceExporter({url: collectorUrl});
-  const sdk = new opentelemetry.NodeSDK({
-    resource: resourceFromAttributes({
-      [ ATTR_SERVICE_NAME ]: process.env.OTEL_SERVICE_NAME || 'currencyservice',
-    }),
-    traceExporter: traceExporter,
-  });
-
-  sdk.start()
-}
-else {
-  logger.info("Tracing disabled.")
-}
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  sdk.shutdown()
+    .then(() => logger.info('Tracing terminated'))
+    .finally(() => process.exit(0));
+});
 
 const path = require('path');
 const grpc = require('@grpc/grpc-js');

@@ -21,7 +21,6 @@ import (
 	"os"
 	"time"
 
-	"cloud.google.com/go/profiler"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -37,9 +36,12 @@ import (
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 )
 
 const (
@@ -87,19 +89,22 @@ type checkoutService struct {
 
 func main() {
 	ctx := context.Background()
-	if os.Getenv("ENABLE_TRACING") == "1" {
-		log.Info("Tracing enabled.")
-		initTracing()
 
-	} else {
-		log.Info("Tracing disabled.")
-	}
+	// Set up trace context propagation first
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{}, propagation.Baggage{}))
 
-	if os.Getenv("ENABLE_PROFILER") == "1" {
-		log.Info("Profiling enabled.")
-		go initProfiling("checkoutservice", "1.0.0")
+	// Initialize tracing - always enabled for OpenChoreo
+	tp, err := initTracing(ctx, "checkoutservice")
+	if err != nil {
+		log.Warnf("Failed to initialize tracing: %v", err)
 	} else {
-		log.Info("Profiling disabled.")
+		defer func() {
+			if err := tp.Shutdown(ctx); err != nil {
+				log.Warnf("Error shutting down tracer provider: %v", err)
+			}
+		}()
 	}
 
 	port := listenPort
@@ -131,10 +136,6 @@ func main() {
 
 	var srv *grpc.Server
 
-	// Propagate trace context always
-	otel.SetTextMapPropagator(
-		propagation.NewCompositeTextMapPropagator(
-			propagation.TraceContext{}, propagation.Baggage{}))
 	srv = grpc.NewServer(
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 	)
@@ -147,56 +148,48 @@ func main() {
 	log.Fatal(err)
 }
 
-func initStats() {
-	//TODO(arbrown) Implement OpenTelemetry stats
-}
-
-func initTracing() {
-	var (
-		collectorAddr string
-		collectorConn *grpc.ClientConn
-	)
-
-	ctx := context.Background()
-	ctx, cancel := context.WithTimeout(ctx, time.Second*3)
-	defer cancel()
-
-	mustMapEnv(&collectorAddr, "COLLECTOR_SERVICE_ADDR")
-	mustConnGRPC(ctx, &collectorConn, collectorAddr)
-
-	exporter, err := otlptracegrpc.New(
-		ctx,
-		otlptracegrpc.WithGRPCConn(collectorConn))
-	if err != nil {
-		log.Warnf("warn: Failed to create trace exporter: %v", err)
+func initTracing(ctx context.Context, serviceName string) (*sdktrace.TracerProvider, error) {
+	// Get collector endpoint from env, default to OpenChoreo's collector
+	collectorAddr := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if collectorAddr == "" {
+		collectorAddr = "opentelemetry-collector:4317"
 	}
+
+	log.Infof("Initializing tracing for %s, exporting to %s", serviceName, collectorAddr)
+
+	// Create OTLP exporter
+	exporter, err := otlptracegrpc.New(ctx,
+		otlptracegrpc.WithEndpoint(collectorAddr),
+		otlptracegrpc.WithInsecure(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create trace exporter: %w", err)
+	}
+
+	// Create resource with service information
+	res, err := resource.Merge(
+		resource.Default(),
+		resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceName(serviceName),
+			semconv.ServiceVersion("1.0.0"),
+			attribute.String("deployment.environment", os.Getenv("DEPLOYMENT_ENV")),
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create resource: %w", err)
+	}
+
+	// Create trace provider
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
-		sdktrace.WithSampler(sdktrace.AlwaysSample()))
+		sdktrace.WithResource(res),
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+	)
 	otel.SetTracerProvider(tp)
 
-}
-
-func initProfiling(service, version string) {
-	// TODO(ahmetb) this method is duplicated in other microservices using Go
-	// since they are not sharing packages.
-	for i := 1; i <= 3; i++ {
-		if err := profiler.Start(profiler.Config{
-			Service:        service,
-			ServiceVersion: version,
-			// ProjectID must be set if not running on GCP.
-			// ProjectID: "my-project",
-		}); err != nil {
-			log.Warnf("failed to start profiler: %+v", err)
-		} else {
-			log.Info("started Stackdriver profiler")
-			return
-		}
-		d := time.Second * 10 * time.Duration(i)
-		log.Infof("sleeping %v to retry initializing Stackdriver profiler", d)
-		time.Sleep(d)
-	}
-	log.Warn("could not initialize Stackdriver profiler after retrying, giving up")
+	log.Info("Tracing initialized successfully")
+	return tp, nil
 }
 
 func mustMapEnv(target *string, envKey string) {

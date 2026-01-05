@@ -27,15 +27,21 @@ RUN ./gradlew installDist
 
 FROM eclipse-temurin:25.0.1_8-jre-alpine@sha256:b51543f89580c1ba70e441cfbc0cfc1635c3c16d2e2d77fec9d890342a3a8687
 
-# @TODO: https://github.com/GoogleCloudPlatform/microservices-demo/issues/2517
-# Download Stackdriver Profiler Java agent
-# RUN mkdir -p /opt/cprof && \
-#     wget -q -O- https://storage.googleapis.com/cloud-profiler/java/latest/profiler_java_agent_alpine.tar.gz \
-#     | tar xzv -C /opt/cprof && \
-#     rm -rf profiler_java_agent.tar.gz
+# Download OpenTelemetry Java Agent for auto-instrumentation
+ARG OTEL_JAVA_AGENT_VERSION=1.32.0
+RUN wget -q -O /opt/opentelemetry-javaagent.jar \
+    https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/download/v${OTEL_JAVA_AGENT_VERSION}/opentelemetry-javaagent.jar
 
 WORKDIR /app
 COPY --from=builder /app .
+
+# Configure OpenTelemetry Java Agent
+ENV JAVA_TOOL_OPTIONS="-javaagent:/opt/opentelemetry-javaagent.jar"
+ENV OTEL_SERVICE_NAME="adservice"
+ENV OTEL_EXPORTER_OTLP_ENDPOINT="http://opentelemetry-collector:4317"
+ENV OTEL_TRACES_EXPORTER="otlp"
+ENV OTEL_METRICS_EXPORTER="none"
+ENV OTEL_LOGS_EXPORTER="none"
 
 EXPOSE 9555
 ENTRYPOINT ["/app/build/install/hipstershop/bin/AdService"]

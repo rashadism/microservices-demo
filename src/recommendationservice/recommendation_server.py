@@ -97,35 +97,35 @@ class RecommendationService(demo_pb2_grpc.RecommendationServiceServicer):
 if __name__ == "__main__":
     logger.info("initializing recommendationservice")
 
+    # Initialize tracing - always enabled for OpenChoreo
     try:
-      if "DISABLE_PROFILER" in os.environ:
-        raise KeyError()
-      else:
-        logger.info("Profiler enabled.")
-        initStackdriverProfiling()
-    except KeyError:
-        logger.info("Profiler disabled.")
+      from opentelemetry.sdk.resources import Resource, SERVICE_NAME, SERVICE_VERSION
 
-    try:
+      otel_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "opentelemetry-collector:4317")
+      logger.info(f"Initializing tracing for recommendationservice, exporting to {otel_endpoint}")
+
+      resource = Resource(attributes={
+        SERVICE_NAME: "recommendationservice",
+        SERVICE_VERSION: "1.0.0",
+      })
+
+      trace.set_tracer_provider(TracerProvider(resource=resource))
+      trace.get_tracer_provider().add_span_processor(
+        BatchSpanProcessor(
+          OTLPSpanExporter(
+            endpoint=otel_endpoint,
+            insecure=True
+          )
+        )
+      )
+
       grpc_client_instrumentor = GrpcInstrumentorClient()
       grpc_client_instrumentor.instrument()
       grpc_server_instrumentor = GrpcInstrumentorServer()
       grpc_server_instrumentor.instrument()
-      if os.environ["ENABLE_TRACING"] == "1":
-        trace.set_tracer_provider(TracerProvider())
-        otel_endpoint = os.getenv("COLLECTOR_SERVICE_ADDR", "localhost:4317")
-        trace.get_tracer_provider().add_span_processor(
-          BatchSpanProcessor(
-              OTLPSpanExporter(
-              endpoint = otel_endpoint,
-              insecure = True
-            )
-          )
-        )
-    except (KeyError, DefaultCredentialsError):
-        logger.info("Tracing disabled.")
+      logger.info("Tracing initialized successfully")
     except Exception as e:
-        logger.warn(f"Exception on Cloud Trace setup: {traceback.format_exc()}, tracing disabled.") 
+      logger.warn(f"Exception on tracing setup: {traceback.format_exc()}")
 
     port = os.environ.get('PORT', "8080")
     catalog_addr = os.environ.get('PRODUCT_CATALOG_SERVICE_ADDR', '')

@@ -1,0 +1,44 @@
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: cart
+  namespace: default
+spec:
+  owner:
+    projectName: microservices-demo
+
+  componentType: deployment/service
+  autoDeploy: true
+
+  parameters:
+    replicas: 1
+    port: 7070
+    resources:
+      requests:
+        cpu: "200m"
+        memory: "64Mi"
+      limits:
+        cpu: "300m"
+        memory: "128Mi"
+
+---
+
+apiVersion: openchoreo.dev/v1alpha1
+kind: Workload
+metadata:
+  name: cart
+  namespace: default
+spec:
+  owner:
+    componentName: cart
+    projectName: microservices-demo
+  containers:
+    main:
+      image: cartservice:latest
+      env:
+        - key: REDIS_ADDR
+          value: "redis:80"
+        - key: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "opentelemetry-collector.openchoreo-observability-plane:4317"
+        - key: OTEL_SERVICE_NAME
+          value: "cartservice"

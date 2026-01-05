@@ -1,0 +1,13 @@
+apiVersion: openchoreo.dev/v1alpha1
+kind: Project
+metadata:
+  annotations:
+    openchoreo.dev/description: Microservices Demo with OpenTelemetry Tracing
+    openchoreo.dev/display-name: Microservices Demo
+  labels:
+    openchoreo.dev/name: microservices-demo
+    openchoreo.dev/organization: default
+  name: microservices-demo
+  namespace: default
+spec:
+  deploymentPipelineRef: default

@@ -166,35 +166,32 @@ def initStackdriverProfiling():
 if __name__ == '__main__':
   logger.info('starting the email service in dummy mode.')
 
-  # Profiler
+  # Initialize tracing - always enabled for OpenChoreo
   try:
-    if "DISABLE_PROFILER" in os.environ:
-      raise KeyError()
-    else:
-      logger.info("Profiler enabled.")
-      initStackdriverProfiling()
-  except KeyError:
-      logger.info("Profiler disabled.")
+    from opentelemetry.sdk.resources import Resource, SERVICE_NAME, SERVICE_VERSION
 
-  # Tracing
-  try:
-    if os.environ["ENABLE_TRACING"] == "1":
-      otel_endpoint = os.getenv("COLLECTOR_SERVICE_ADDR", "localhost:4317")
-      trace.set_tracer_provider(TracerProvider())
-      trace.get_tracer_provider().add_span_processor(
-        BatchSpanProcessor(
-            OTLPSpanExporter(
-            endpoint = otel_endpoint,
-            insecure = True
-          )
+    otel_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "opentelemetry-collector:4317")
+    logger.info(f"Initializing tracing for emailservice, exporting to {otel_endpoint}")
+
+    resource = Resource(attributes={
+      SERVICE_NAME: "emailservice",
+      SERVICE_VERSION: "1.0.0",
+    })
+
+    trace.set_tracer_provider(TracerProvider(resource=resource))
+    trace.get_tracer_provider().add_span_processor(
+      BatchSpanProcessor(
+        OTLPSpanExporter(
+          endpoint=otel_endpoint,
+          insecure=True
         )
       )
+    )
+
     grpc_server_instrumentor = GrpcInstrumentorServer()
     grpc_server_instrumentor.instrument()
-
-  except (KeyError, DefaultCredentialsError):
-      logger.info("Tracing disabled.")
+    logger.info("Tracing initialized successfully")
   except Exception as e:
-      logger.warn(f"Exception on Cloud Trace setup: {traceback.format_exc()}, tracing disabled.") 
-  
+    logger.warn(f"Exception on tracing setup: {traceback.format_exc()}")
+
   start(dummy_mode = True)

@@ -1,0 +1,50 @@
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: ad
+  namespace: default
+spec:
+  owner:
+    projectName: microservices-demo
+
+  componentType: deployment/service
+  autoDeploy: true
+
+  parameters:
+    replicas: 1
+    port: 9555
+    resources:
+      requests:
+        cpu: "200m"
+        memory: "180Mi"
+      limits:
+        cpu: "300m"
+        memory: "300Mi"
+
+---
+
+apiVersion: openchoreo.dev/v1alpha1
+kind: Workload
+metadata:
+  name: ad
+  namespace: default
+spec:
+  owner:
+    componentName: ad
+    projectName: microservices-demo
+  containers:
+    main:
+      image: adservice:latest
+      env:
+        - key: PORT
+          value: "9555"
+        - key: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://opentelemetry-collector.openchoreo-observability-plane:4317"
+        - key: OTEL_SERVICE_NAME
+          value: "adservice"
+        - key: OTEL_TRACES_EXPORTER
+          value: "otlp"
+        - key: OTEL_METRICS_EXPORTER
+          value: "none"
+        - key: OTEL_LOGS_EXPORTER
+          value: "none"

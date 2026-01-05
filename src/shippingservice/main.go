@@ -15,14 +15,21 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
 	"time"
 
-	"cloud.google.com/go/profiler"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/net/context"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
@@ -54,19 +61,23 @@ func init() {
 }
 
 func main() {
-	if os.Getenv("DISABLE_TRACING") == "" {
-		log.Info("Tracing enabled, but temporarily unavailable")
-		log.Info("See https://github.com/GoogleCloudPlatform/microservices-demo/issues/422 for more info.")
-		go initTracing()
-	} else {
-		log.Info("Tracing disabled.")
-	}
+	ctx := context.Background()
 
-	if os.Getenv("DISABLE_PROFILER") == "" {
-		log.Info("Profiling enabled.")
-		go initProfiling("shippingservice", "1.0.0")
+	// Set up trace context propagation first
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{}, propagation.Baggage{}))
+
+	// Initialize tracing - always enabled for OpenChoreo
+	tp, err := initTracing(ctx, "shippingservice")
+	if err != nil {
+		log.Warnf("Failed to initialize tracing: %v", err)
 	} else {
-		log.Info("Profiling disabled.")
+		defer func() {
+			if err := tp.Shutdown(ctx); err != nil {
+				log.Warnf("Error shutting down tracer provider: %v", err)
+			}
+		}()
 	}
 
 	port := defaultPort
@@ -80,14 +91,11 @@ func main() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	var srv *grpc.Server
-	if os.Getenv("DISABLE_STATS") == "" {
-		log.Info("Stats enabled, but temporarily unavailable")
-		srv = grpc.NewServer()
-	} else {
-		log.Info("Stats disabled.")
-		srv = grpc.NewServer()
-	}
+	// Create gRPC server with OTEL instrumentation
+	srv := grpc.NewServer(
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+	)
+
 	svc := &server{}
 	pb.RegisterShippingServiceServer(srv, svc)
 	healthcheck := health.NewServer()
@@ -148,32 +156,46 @@ func (s *server) ShipOrder(ctx context.Context, in *pb.ShipOrderRequest) (*pb.Sh
 	}, nil
 }
 
-func initStats() {
-	//TODO(arbrown) Implement OpenTelemetry stats
-}
-
-func initTracing() {
-	// TODO(arbrown) Implement OpenTelemetry tracing
-}
-
-func initProfiling(service, version string) {
-	// TODO(ahmetb) this method is duplicated in other microservices using Go
-	// since they are not sharing packages.
-	for i := 1; i <= 3; i++ {
-		if err := profiler.Start(profiler.Config{
-			Service:        service,
-			ServiceVersion: version,
-			// ProjectID must be set if not running on GCP.
-			// ProjectID: "my-project",
-		}); err != nil {
-			log.Warnf("failed to start profiler: %+v", err)
-		} else {
-			log.Info("started Stackdriver profiler")
-			return
-		}
-		d := time.Second * 10 * time.Duration(i)
-		log.Infof("sleeping %v to retry initializing Stackdriver profiler", d)
-		time.Sleep(d)
+func initTracing(ctx context.Context, serviceName string) (*sdktrace.TracerProvider, error) {
+	// Get collector endpoint from env, default to OpenChoreo's collector
+	collectorAddr := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if collectorAddr == "" {
+		collectorAddr = "opentelemetry-collector:4317"
 	}
-	log.Warn("could not initialize Stackdriver profiler after retrying, giving up")
+
+	log.Infof("Initializing tracing for %s, exporting to %s", serviceName, collectorAddr)
+
+	// Create OTLP exporter
+	exporter, err := otlptracegrpc.New(ctx,
+		otlptracegrpc.WithEndpoint(collectorAddr),
+		otlptracegrpc.WithInsecure(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create trace exporter: %w", err)
+	}
+
+	// Create resource with service information
+	res, err := resource.Merge(
+		resource.Default(),
+		resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceName(serviceName),
+			semconv.ServiceVersion("1.0.0"),
+			attribute.String("deployment.environment", os.Getenv("DEPLOYMENT_ENV")),
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create resource: %w", err)
+	}
+
+	// Create trace provider
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(res),
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+	)
+	otel.SetTracerProvider(tp)
+
+	log.Info("Tracing initialized successfully")
+	return tp, nil
 }
